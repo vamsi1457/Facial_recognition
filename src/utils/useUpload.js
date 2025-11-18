@@ -1,6 +1,4 @@
 import * as React from 'react';
-import { UploadClient } from '@uploadcare/upload-client'
-const client = new UploadClient({ publicKey: process.env.EXPO_PUBLIC_UPLOADCARE_PUBLIC_KEY });
 
 function useUpload() {
   const [loading, setLoading] = React.useState(false);
@@ -8,33 +6,13 @@ function useUpload() {
     try {
       setLoading(true);
       let response;
-
-      if ("reactNativeAsset" in input && input.reactNativeAsset) {
-        let asset = input.reactNativeAsset;
-
-        if (asset.file) {
-          const formData = new FormData();
-          formData.append("file", asset.file);
-
-          response = await fetch("/_create/api/upload/", {
-            method: "POST",
-            body: formData,
-          });
-        } else {
-          // Fallback to presigned Uploadcare upload
-          const presignRes = await fetch("/_create/api/upload/presign/", {
-            method: "POST",
-          });
-          const { secureSignature, secureExpire } = await presignRes.json();
-
-          const result = await client.uploadFile(asset, {
-            fileName: asset.name ?? asset.uri.split("/").pop(),
-            contentType: asset.mimeType,
-            secureSignature,
-            secureExpire
-          });
-          return { url: `${process.env.EXPO_PUBLIC_BASE_CREATE_USER_CONTENT_URL}/${result.uuid}/`, mimeType: result.mimeType || null };
-        }
+      if ("file" in input && input.file) {
+        const formData = new FormData();
+        formData.append("file", input.file);
+        response = await fetch("/_create/api/upload/", {
+          method: "POST",
+          body: formData
+        });
       } else if ("url" in input) {
         response = await fetch("/_create/api/upload/", {
           method: "POST",

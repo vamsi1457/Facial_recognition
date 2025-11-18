@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-  function useHandleStreamResponse({
+function useHandleStreamResponse({
   onChunk,
   onFinish
 }) {
@@ -33,4 +33,4 @@ import * as React from 'react';
   return React.useCallback((response) => handleStreamResponseRef.current(response), []); 
 }
 
-  export default useHandleStreamResponse;
+export default useHandleStreamResponse;

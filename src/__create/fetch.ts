@@ -1,92 +1,113 @@
-import * as SecureStore from 'expo-secure-store';
-import { fetch as expoFetch } from 'expo/fetch';
-
 const originalFetch = fetch;
-const authKey = `${process.env.EXPO_PUBLIC_PROJECT_GROUP_ID}-jwt`;
+const isBackend = () => typeof window === 'undefined';
 
-const getURLFromArgs = (...args: Parameters<typeof fetch>) => {
+const safeStringify = (value: unknown) =>
+  JSON.stringify(value, (_k, v) => {
+    if (v instanceof Date) return { __t: 'Date', v: v.toISOString() };
+    if (v instanceof Error)
+      return { __t: 'Error', v: { name: v.name, message: v.message, stack: v.stack } };
+    return v;
+  });
+
+const postToParent = (level: string, text: string, extra: unknown) => {
+  try {
+    if (isBackend() || !window.parent || window.parent === window) {
+      ('level' in console ? console[level] : console.log)(text, extra);
+      return;
+    }
+    window.parent.postMessage(
+      {
+        type: 'sandbox:web:console-write',
+        __viteConsole: true,
+        level,
+        text,
+        args: [safeStringify(extra)],
+      },
+      '*'
+    );
+  } catch {
+    /* noop */
+  }
+};
+const getURlFromArgs = (...args: Parameters<typeof originalFetch>): string => {
   const [urlArg] = args;
-  let url: string | null;
+  let url: string;
   if (typeof urlArg === 'string') {
     url = urlArg;
-  } else if (typeof urlArg === 'object' && urlArg !== null) {
+  } else if (urlArg instanceof Request) {
     url = urlArg.url;
   } else {
-    url = null;
+    url = `${urlArg.protocol}//${urlArg.host}${urlArg.pathname}`;
   }
   return url;
 };
 
 const isFirstPartyURL = (url: string) => {
-  return (
-    url.startsWith('/') ||
-    (process.env.EXPO_PUBLIC_BASE_URL && url.startsWith(process.env.EXPO_PUBLIC_BASE_URL))
-  );
+  return url.startsWith('/integrations');
 };
 
-const isSecondPartyURL = (url: string) => {
-  return url.startsWith('/_create/');
-};
-
-type Params = Parameters<typeof expoFetch>;
-const fetchToWeb = async function fetchWithHeaders(...args: Params) {
-  const firstPartyURL = process.env.EXPO_PUBLIC_BASE_URL;
-  const secondPartyURL = process.env.EXPO_PUBLIC_PROXY_BASE_URL;
-  if (!firstPartyURL || !secondPartyURL) {
-    return expoFetch(...args);
-  }
+export const fetchWithHeaders = async function fetchWithHeaders(
+  ...args: Parameters<typeof originalFetch>
+) {
   const [input, init] = args;
-  const url = getURLFromArgs(input, init);
-  if (!url) {
-    return expoFetch(input, init);
-  }
+  const url = getURlFromArgs(input, init);
 
+  const headers = {
+    'x-createxyz-project-group-id': process.env.NEXT_PUBLIC_PROJECT_GROUP_ID,
+  };
   const isExternalFetch = !isFirstPartyURL(url);
   // we should not add headers to requests that don't go to our own server
-  if (isExternalFetch) {
-    return expoFetch(input, init);
-  }
-
-  let finalInput = input;
-  const baseURL = isSecondPartyURL(url) ? secondPartyURL : firstPartyURL;
-  if (typeof input === 'string') {
-    finalInput = input.startsWith('/') ? `${baseURL}${input}` : input;
-  } else {
+  // or if it's an API request
+  if (isExternalFetch || url.startsWith('/api')) {
     return originalFetch(input, init);
   }
 
-  const initHeaders = init?.headers ?? {};
-  const finalHeaders = new Headers(initHeaders);
-
-  const headers = {
-    'x-createxyz-project-group-id': process.env.EXPO_PUBLIC_PROJECT_GROUP_ID,
-    host: process.env.EXPO_PUBLIC_HOST,
-    'x-forwarded-host': process.env.EXPO_PUBLIC_HOST,
-    'x-createxyz-host': process.env.EXPO_PUBLIC_HOST,
-  };
-
+  // Fix: Parse headers object correctly and merge them
+  const finalHeaders = new Headers(init?.headers ?? {});
   for (const [key, value] of Object.entries(headers)) {
     if (value) {
       finalHeaders.set(key, value);
     }
   }
 
-  const auth = await SecureStore.getItemAsync(authKey)
-    .then((auth) => {
-      return auth ? JSON.parse(auth) : null;
-    })
-    .catch(() => {
-      return null;
-    });
-
-  if (auth) {
-    finalHeaders.set('authorization', `Bearer ${auth.jwt}`);
+  if (input instanceof Request) {
+    for (const [key, value] of Object.entries(headers)) {
+      if (value) {
+        input.headers.set(key, value);
+      }
+    }
   }
 
-  return expoFetch(finalInput, {
-    ...init,
-    headers: finalHeaders,
-  });
+  try {
+    const result = await originalFetch(
+      `${isBackend() ? (process.env.NEXT_PUBLIC_CREATE_BASE_URL ?? 'https://www.create.xyz') : ''}${input}`,
+      {
+        ...init,
+        headers: finalHeaders,
+      }
+    );
+    if (!result.ok) {
+      postToParent(
+        'error',
+        `Failed to load resource: the server responded with a status of ${result.status} (${result.statusText ?? ''})`,
+        {
+          url,
+          status: result.status,
+          statusText: result.statusText,
+        }
+      );
+    }
+    return result;
+  } catch (error) {
+    postToParent('error', 'Fetch error', {
+      url,
+      error:
+        error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack }
+          : error,
+    });
+    throw error; // rethrow the error after logging
+  }
 };
 
-export default fetchToWeb;
+export default fetchWithHeaders;
